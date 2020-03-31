@@ -16,6 +16,7 @@ import javax.inject.Singleton;
 
 import org.apache.commons.io.IOUtils;
 import org.dom4j.Element;
+import org.dom4j.Node;
 
 import com.google.common.base.Preconditions;
 
@@ -1566,6 +1567,81 @@ public class DataMigrator {
 
 	// Database schema changed
 	private void migrate36(File dataDir, Stack<Integer> versions) {	
+	}
+	
+	private void migrate37(File dataDir, Stack<Integer> versions) {
+		for (File file: dataDir.listFiles()) {
+			if (file.getName().startsWith("Settings.xml")) {
+				VersionedDocument dom = VersionedDocument.fromFile(file);
+				for (Element element: dom.getRootElement().elements()) {
+					if (element.elementTextTrim("key").equals("LICENSE"))
+						element.detach();
+				}
+				dom.writeToFile(file, false);
+			}
+		}
+	}	
+	
+	private void migrate38(File dataDir, Stack<Integer> versions) {
+		for (File file: dataDir.listFiles()) {
+			if (file.getName().contains(".xml")) {
+				VersionedDocument dom = VersionedDocument.fromFile(file);
+				for (Node node: dom.selectNodes("//io.onedev.server.model.support.pullrequest.NamedPullRequestQuery")) {
+					if (node instanceof Element) {
+						Element element = (Element) node;
+						if (element.elementTextTrim("query").equals("all"))
+							element.detach();
+					}
+				}
+				for (Node node: dom.selectNodes("//io.onedev.server.model.support.issue.NamedIssueQuery")) {
+					if (node instanceof Element) {
+						Element element = (Element) node;
+						if (element.elementTextTrim("query").equals("all"))
+							element.detach();
+					}
+				}
+				for (Node node: dom.selectNodes("//io.onedev.server.model.support.build.NamedBuildQuery")) {
+					if (node instanceof Element) {
+						Element element = (Element) node;
+						if (element.elementTextTrim("query").equals("all"))
+							element.detach();
+					}
+				}
+				for (Node node: dom.selectNodes("//io.onedev.server.model.support.NamedProjectQuery")) {
+					if (node instanceof Element) {
+						Element element = (Element) node;
+						if (element.elementTextTrim("query").equals("all"))
+							element.detach();
+					}
+				}
+				for (Node node: dom.selectNodes("//issueQuery")) {
+					if (node instanceof Element) {
+						Element element = (Element) node;
+						if (element.getTextTrim().equals("all"))
+							element.detach();
+					}
+				}
+				for (Node node: dom.selectNodes("//io.onedev.server.model.support.build.BuildPreservation")) {
+					if (node instanceof Element) {
+						Element element = (Element) node;
+						Element conditionElement = element.element("condition");
+						if (conditionElement.getTextTrim().equals("all"))
+							conditionElement.detach();
+					}
+				}
+				dom.writeToFile(file, false);
+			}
+			if (file.getName().startsWith("IssueChanges.xml")) {
+				VersionedDocument dom = VersionedDocument.fromFile(file);
+				for (Element element: dom.getRootElement().elements()) {
+					Element dataElement = element.element("data");
+					String className = dataElement.attributeValue("class");
+					if (className.contains("IssueCommittedData") || className.contains("IssuePullRequest")) 
+						element.detach();
+				}
+				dom.writeToFile(file, false);
+			}
+		}
 	}
 	
 }

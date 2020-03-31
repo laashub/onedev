@@ -24,6 +24,7 @@ import org.apache.wicket.extensions.markup.html.repeater.data.table.IColumn;
 import org.apache.wicket.extensions.markup.html.repeater.data.table.NavigationToolbar;
 import org.apache.wicket.extensions.markup.html.repeater.data.table.NoRecordsToolbar;
 import org.apache.wicket.extensions.markup.html.repeater.util.SortableDataProvider;
+import org.apache.wicket.feedback.FencedFeedbackPanel;
 import org.apache.wicket.markup.ComponentTag;
 import org.apache.wicket.markup.head.CssHeaderItem;
 import org.apache.wicket.markup.head.IHeaderResponse;
@@ -43,10 +44,7 @@ import org.apache.wicket.model.LoadableDetachableModel;
 import org.apache.wicket.model.Model;
 import org.apache.wicket.model.PropertyModel;
 import org.apache.wicket.request.cycle.RequestCycle;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import de.agilecoders.wicket.core.markup.html.bootstrap.common.NotificationPanel;
 import io.onedev.commons.utils.StringUtils;
 import io.onedev.server.OneDev;
 import io.onedev.server.OneException;
@@ -58,7 +56,11 @@ import io.onedev.server.model.Project;
 import io.onedev.server.model.User;
 import io.onedev.server.model.support.LastUpdate;
 import io.onedev.server.model.support.administration.GlobalIssueSetting;
+import io.onedev.server.search.entity.EntityQuery;
 import io.onedev.server.search.entity.issue.IssueQuery;
+import io.onedev.server.search.entity.issue.IssueQueryLexer;
+import io.onedev.server.search.entity.issue.NumberCriteria;
+import io.onedev.server.search.entity.issue.TitleCriteria;
 import io.onedev.server.security.permission.AccessProject;
 import io.onedev.server.util.DateUtils;
 import io.onedev.server.util.Input;
@@ -91,8 +93,6 @@ import io.onedev.server.web.util.ReferenceTransformer;
 @SuppressWarnings("serial")
 public abstract class IssueListPanel extends Panel {
 
-	private static final Logger logger = LoggerFactory.getLogger(IssueListPanel.class);
-	
 	private final String query;
 	
 	private IModel<IssueQuery> parsedQueryModel = new LoadableDetachableModel<IssueQuery>() {
@@ -100,16 +100,20 @@ public abstract class IssueListPanel extends Panel {
 		@Override
 		protected IssueQuery load() {
 			try {
-				IssueQuery additionalQuery = IssueQuery.parse(getProject(), query, true, true, false, false, false);
-				return IssueQuery.merge(getBaseQuery(), additionalQuery);
+				return IssueQuery.merge(getBaseQuery(), IssueQuery.parse(getProject(), query, true, true, false, false, false));
+			} catch (OneException e) {
+				error(e.getMessage());
+				return null;
 			} catch (Exception e) {
-				logger.debug("Error parsing issue query: " + query, e);
-				if (e.getMessage() != null)
-					error(e.getMessage());
-				else
-					error("Malformed issue query");
+				warn("Not a valid formal query, performing fuzzy query");
+				try {
+					EntityQuery.getProjectScopedNumber(getProject(), query);
+					return IssueQuery.merge(getBaseQuery(), 
+							new IssueQuery(new NumberCriteria(getProject(), query, IssueQueryLexer.Is)));
+				} catch (Exception e2) {
+					return IssueQuery.merge(getBaseQuery(), new IssueQuery(new TitleCriteria("*" + query + "*")));
+				}
 			}
-			return null;
 		}
 		
 	};
@@ -163,17 +167,13 @@ public abstract class IssueListPanel extends Panel {
 	protected void onInitialize() {
 		super.onInitialize();
 
-		WebMarkupContainer others = new WebMarkupContainer("others");
-		others.setOutputMarkupId(true);
-		add(others);
-		
-		others.add(new AjaxLink<Void>("showSavedQueries") {
+		add(new AjaxLink<Void>("showSavedQueries") {
 
 			@Override
 			public void onEvent(IEvent<?> event) {
 				super.onEvent(event);
 				if (event.getPayload() instanceof SavedQueriesClosed) {
-					((SavedQueriesClosed) event.getPayload()).getHandler().add(others);
+					((SavedQueriesClosed) event.getPayload()).getHandler().add(this);
 				}
 			}
 			
@@ -186,12 +186,13 @@ public abstract class IssueListPanel extends Panel {
 			@Override
 			public void onClick(AjaxRequestTarget target) {
 				send(getPage(), Broadcast.BREADTH, new SavedQueriesOpened(target));
-				target.add(others);
+				target.add(this);
 			}
 			
-		});
+		}.setOutputMarkupPlaceholderTag(true));
 		
-		others.add(new AjaxLink<Void>("saveQuery") {
+		Component saveQueryLink;
+		add(saveQueryLink = new AjaxLink<Void>("saveQuery") {
 
 			@Override
 			protected void onConfigure() {
@@ -215,7 +216,7 @@ public abstract class IssueListPanel extends Panel {
 				getQuerySaveSupport().onSaveQuery(target, query);
 			}		
 			
-		});
+		}.setOutputMarkupId(true));
 		
 		TextField<String> input = new TextField<String>("input", new PropertyModel<String>(this, "query"));
 		input.add(new IssueQueryBehavior(new AbstractReadOnlyModel<Project>() {
@@ -232,7 +233,7 @@ public abstract class IssueListPanel extends Panel {
 			@Override
 			protected void onUpdate(AjaxRequestTarget target) {
 				if (SecurityUtils.getUser() != null && getQuerySaveSupport() != null)
-					target.add(others);
+					target.add(saveQueryLink);
 			}
 			
 		});
@@ -254,7 +255,7 @@ public abstract class IssueListPanel extends Panel {
 		});
 		add(form);
 		
-		others.add(new ModalLink("listFields") {
+		add(new ModalLink("listFields") {
 
 			private List<String> listFields;
 			
@@ -313,7 +314,7 @@ public abstract class IssueListPanel extends Panel {
 							getGlobalIssueSetting().setListFields(listFields);
 							OneDev.getInstance(SettingManager.class).saveIssueSetting(getGlobalIssueSetting());
 						}
-						onQueryUpdated(target, query);
+						target.add(body);
 					}
 					
 				});
@@ -325,7 +326,7 @@ public abstract class IssueListPanel extends Panel {
 						modal.close();
 						getProject().getIssueSetting().setListFields(null);
 						OneDev.getInstance(ProjectManager.class).save(getProject());
-						onQueryUpdated(target, query);
+						target.add(body);
 					}
 					
 				}.setVisible(getProject() != null && getProject().getIssueSetting().getListFields(false) != null));
@@ -390,7 +391,8 @@ public abstract class IssueListPanel extends Panel {
 			}.setEscapeModelStrings(false));
 		}
 		
-		others.add(new ModalLink("batchEditSelected") {
+		ModalLink batchEditSelectedLink;
+		add(batchEditSelectedLink = new ModalLink("batchEditSelected") {
 
 			@Override
 			protected Component newContent(String id, ModalPanel modal) {
@@ -409,7 +411,7 @@ public abstract class IssueListPanel extends Panel {
 					@Override
 					protected void onUpdated(AjaxRequestTarget target) {
 						modal.close();
-						onQueryUpdated(target, query);
+						target.add(body);
 					}
 
 					@Override
@@ -443,8 +445,9 @@ public abstract class IssueListPanel extends Panel {
 			}
 			
 		});
+		batchEditSelectedLink.setOutputMarkupPlaceholderTag(true);
 
-		others.add(new ModalLink("batchEditAll") {
+		add(new ModalLink("batchEditAll") {
 
 			@Override
 			protected Component newContent(String id, ModalPanel modal) {
@@ -463,7 +466,7 @@ public abstract class IssueListPanel extends Panel {
 					@Override
 					protected void onUpdated(AjaxRequestTarget target) {
 						modal.close();
-						onQueryUpdated(target, query);
+						target.add(body);
 					}
 
 					@Override
@@ -535,7 +538,7 @@ public abstract class IssueListPanel extends Panel {
 			
 		};
 		
-		body.add(new NotificationPanel("feedback", this));
+		body.add(new FencedFeedbackPanel("feedback", this));
 		
 		List<IColumn<Issue, Void>> columns = new ArrayList<>();
 		
@@ -557,7 +560,7 @@ public abstract class IssueListPanel extends Panel {
 
 				@Override
 				protected void onSelectionChange(AjaxRequestTarget target) {
-					target.add(others);
+					target.add(batchEditSelectedLink);
 				}
 				
 			});
@@ -660,6 +663,8 @@ public abstract class IssueListPanel extends Panel {
 			
 		});
 		issuesTable.addBottomToolbar(new NoRecordsToolbar(issuesTable));
+		
+		setOutputMarkupId(true);
 	}
 	
 	private List<String> getListFields() {
